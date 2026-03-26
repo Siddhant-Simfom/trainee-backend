@@ -9,11 +9,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MySQL Connection Pool
+
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'mysql-database',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
+  host: process.env.DB_HOST || 'trainee-mysql',
+  user: process.env.DB_USER || 'trainee_user',
+  password: process.env.DB_PASSWORD || 'trainee_pass',
   database: process.env.DB_NAME || 'trainee_db',
   waitForConnections: true,
   connectionLimit: 10,
@@ -24,6 +24,7 @@ const pool = mysql.createPool({
 async function initializeDatabase() {
   try {
     const connection = await pool.getConnection();
+
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS employees (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -35,10 +36,13 @@ async function initializeDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `);
+
     connection.release();
     console.log('Database initialized successfully');
+
   } catch (error) {
     console.error('Database initialization error:', error);
+    throw error; // IMPORTANT → fail startup if DB fails
   }
 }
 
@@ -48,13 +52,15 @@ app.get('/api/employees', async (req, res) => {
     const connection = await pool.getConnection();
     const [rows] = await connection.execute('SELECT * FROM employees');
     connection.release();
-    
+
     res.json({
       success: true,
       message: 'Employees retrieved successfully',
       data: rows
     });
+
   } catch (error) {
+    console.error(error);
     res.status(500).json({
       success: false,
       message: 'Error retrieving employees',
@@ -93,7 +99,9 @@ app.post('/api/employees', async (req, res) => {
         salary
       }
     });
+
   } catch (error) {
+    console.error(error);
     res.status(500).json({
       success: false,
       message: 'Error creating employee',
@@ -116,8 +124,7 @@ app.put('/api/employees/:id', async (req, res) => {
     }
 
     const connection = await pool.getConnection();
-    
-    // Check if employee exists
+
     const [checkRows] = await connection.execute(
       'SELECT * FROM employees WHERE id = ?',
       [id]
@@ -131,25 +138,21 @@ app.put('/api/employees/:id', async (req, res) => {
       });
     }
 
-    // Update employee
     await connection.execute(
       'UPDATE employees SET name = ?, email = ?, position = ?, salary = ? WHERE id = ?',
       [name, email, position, salary, id]
     );
+
     connection.release();
 
     res.json({
       success: true,
       message: 'Employee updated successfully',
-      data: {
-        id,
-        name,
-        email,
-        position,
-        salary
-      }
+      data: { id, name, email, position, salary }
     });
+
   } catch (error) {
+    console.error(error);
     res.status(500).json({
       success: false,
       message: 'Error updating employee',
@@ -158,7 +161,7 @@ app.put('/api/employees/:id', async (req, res) => {
   }
 });
 
-// Health check endpoint
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({
     success: true,
@@ -168,9 +171,14 @@ app.get('/api/health', (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-// Start server
-initializeDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+// Start server ONLY if DB works
+initializeDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("Startup failed:", err);
+    process.exit(1);
   });
-});
