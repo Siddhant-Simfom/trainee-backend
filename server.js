@@ -171,14 +171,35 @@ app.get('/api/health', (req, res) => {
 
 const PORT = process.env.PORT || 5000;
 
-// Start server ONLY if DB works
-initializeDatabase()
-  .then(() => {
+async function waitForDB(retries = 10, delay = 3000) {
+  while (retries) {
+    try {
+      const connection = await pool.getConnection();
+      console.log("✅ MySQL Connected");
+      connection.release();
+      return;
+    } catch (err) {
+      console.log("⏳ Waiting for MySQL...");
+      retries--;
+      await new Promise(res => setTimeout(res, delay));
+    }
+  }
+  throw new Error("❌ MySQL not available");
+}
+
+async function startServer() {
+  try {
+    await waitForDB();
+    await initializeDatabase();
+
     app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+      console.log(`🚀 Server running on port ${PORT}`);
     });
-  })
-  .catch((err) => {
-    console.error("Startup failed:", err);
+
+  } catch (err) {
+    console.error("❌ Startup failed:", err);
     process.exit(1);
-  });
+  }
+}
+
+startServer();
