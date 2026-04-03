@@ -2,12 +2,48 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
 require('dotenv').config();
-
+const client = require('prom-client');
 const app = express();
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// Collect default metrics (CPU, memory, etc.)
+client.collectDefaultMetrics();
+
+// Custom metrics
+const httpRequestCounter = new client.Counter({
+  name: 'http_requests_total',
+  help: 'Total HTTP Requests',
+  labelNames: ['method', 'route', 'status']
+});
+
+const httpRequestDuration = new client.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests',
+  labelNames: ['method', 'route', 'status'],
+  buckets: [0.1, 0.5, 1, 2, 5]
+});
+
+// Middleware to track metrics
+app.use((req, res, next) => {
+  const start = Date.now();
+
+  res.on('finish', () => {
+    const duration = (Date.now() - start) / 1000;
+
+    httpRequestCounter
+      .labels(req.method, req.route?.path || req.path, res.statusCode)
+      .inc();
+
+    httpRequestDuration
+      .labels(req.method, req.route?.path || req.path, res.statusCode)
+      .observe(duration);
+  });
+
+  next();
+});
 
 
 const pool = mysql.createPool({
@@ -20,7 +56,6 @@ const pool = mysql.createPool({
   queueLimit: 0
 });
 
-// Initialize database table
 async function initializeDatabase() {
   try {
     const connection = await pool.getConnection();
@@ -38,15 +73,15 @@ async function initializeDatabase() {
     `);
 
     connection.release();
-    console.log('Database initialized successfully');
+    console.log('✅ Database initialized');
 
   } catch (error) {
-    console.error('Database initialization error:', error);
-    throw error; // IMPORTANT → fail startup if DB fails
+    console.error('❌ DB init error:', error);
+    throw error;
   }
 }
 
-// GET endpoint - Retrieve all employees
+// GET employees
 app.get('/api/employees', async (req, res) => {
   try {
     const connection = await pool.getConnection();
@@ -55,119 +90,55 @@ app.get('/api/employees', async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Employees retrieved successfully',
       data: rows
     });
 
   } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      success: false,
-      message: 'Error retrieving employees',
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// POST endpoint - Create new employee
+// POST employee
 app.post('/api/employees', async (req, res) => {
   try {
     const { name, email, position, salary } = req.body;
 
     if (!name || !email) {
-      return res.status(400).json({
-        success: false,
-        message: 'Name and email are required'
-      });
+      return res.status(400).json({ success: false, message: 'Missing fields' });
     }
 
     const connection = await pool.getConnection();
+
     const [result] = await connection.execute(
       'INSERT INTO employees (name, email, position, salary) VALUES (?, ?, ?, ?)',
       [name, email, position, salary]
     );
+
     connection.release();
 
     res.status(201).json({
       success: true,
-      message: 'Employee created successfully',
-      data: {
-        id: result.insertId,
-        name,
-        email,
-        position,
-        salary
-      }
+      id: result.insertId
     });
 
   } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      success: false,
-      message: 'Error creating employee',
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// PUT endpoint - Update employee
-app.put('/api/employees/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, email, position, salary } = req.body;
-
-    if (!id) {
-      return res.status(400).json({
-        success: false,
-        message: 'Employee ID is required'
-      });
-    }
-
-    const connection = await pool.getConnection();
-
-    const [checkRows] = await connection.execute(
-      'SELECT * FROM employees WHERE id = ?',
-      [id]
-    );
-
-    if (checkRows.length === 0) {
-      connection.release();
-      return res.status(404).json({
-        success: false,
-        message: 'Employee not found'
-      });
-    }
-
-    await connection.execute(
-      'UPDATE employees SET name = ?, email = ?, position = ?, salary = ? WHERE id = ?',
-      [name, email, position, salary, id]
-    );
-
-    connection.release();
-
-    res.json({
-      success: true,
-      message: 'Employee updated successfully',
-      data: { id, name, email, position, salary }
-    });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      success: false,
-      message: 'Error updating employee',
-      error: error.message
-    });
-  }
-});
-
-// Health check
+// Health
 app.get('/api/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Backend is running'
-  });
+  res.json({ status: 'OK' });
 });
+
+
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
+});
+
+
 
 const PORT = process.env.PORT || 5000;
 
@@ -178,7 +149,7 @@ async function waitForDB(retries = 10, delay = 3000) {
       console.log("✅ MySQL Connected");
       connection.release();
       return;
-    } catch (err) {
+    } catch {
       console.log("⏳ Waiting for MySQL...");
       retries--;
       await new Promise(res => setTimeout(res, delay));
